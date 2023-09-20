@@ -563,103 +563,25 @@ vm::bhyve_device_disks(){
 # @modifies _devices _slot_network _taplist
 #
 vm::bhyve_device_networking(){
-    local _type _switch _mac _custom_tap _tap _sid _mtu
-    local _num=0 _member_type _sw_type _iname _func=0
+    local _emulation _num=0 _func=0
 
     while true; do
-        config::get "_type" "network${_num}_type"
-        [ -z "${_type}" ] && break
-
-        config::get "_switch" "network${_num}_switch"
-        config::get "_mac" "network${_num}_mac"
-        config::get "_custom_tap" "network${_num}_device"
-        config::get "_iname" "network${_num}_name"
+        config::get "_emulation" "network${_num}_type"
+        [ -z "${_emulation}" ] && break
         config::get "_slot" "network${_num}_slot"
-
-        # set a static mac if we don't have one
-        [ -z "${_mac}" ] && vm::generate_static_mac
 
         if [ -n "${_slot}" ]; then
             _slot_network=${_slot}
             _func=0
         else
+            # move slot if we've hit function 8
             if [ ${_func} -ge 8 ]; then
                 _func=0
-                _slot_network=$((_slot_network + 1))
-            fi
-        fi 
-
-        # get type of switch
-        switch::type "_sw_type" "${_switch}"
-
-        if [ "${_sw_type}" = "vale" ]; then
-            # create a vale port id
-            switch::vale::id "_tap" "${_switch}" "${_mac}"
-
-            util::log "guest" "${_name}" "adding vale interface ${_tap} (${_switch})"
-            _devices="${_devices} -s ${_slot_network}:${_func},${_type},${_tap}"
-            [ -n "${_mac}" ] && _devices="${_devices},mac=${_mac}"
-
-            _func=$((_func + 1))
-        elif [ "${_sw_type}" = "netgraph" ]; then
-            # create a netgraph peer
-            switch::netgraph::id "_path" "${_switch}"
-
-            util::log "guest" "${_name}" "adding netgraph interface ${_path} (${_switch})"
-            _devices="${_devices} -s ${_slot_network}:${_func},${_type},${_path}"
-            [ -n "${_mac}" ] && _devices="${_devices},mac=${_mac}"
-
-            _func=$((_func + 1))
-        else
-            # create interface
-            if [ -n "${_custom_tap}" ]; then
-                _tap="${_custom_tap}"
-            elif [ -n "${_iname}" ]; then
-                _tap=$(ifconfig tap create name "${_iname}")
-            else
-                _tap=$(ifconfig tap create)
-            fi
-
-            # should this be a span member?
-            _member_type="addm"
-            config::yesno "network${_num}_span" && _member_type="span"
-
-            if [ -n "${_tap}" ]; then
-                util::log "guest" "${_name}" "initialising network device ${_tap}"
-                ifconfig "${_tap}" descr "vmnet/${_name}/${_num}/${_switch:-custom}" group vm-port >/dev/null 2>&1
-
-                if [ -n "${_switch}" ]; then
-                    switch::id "_sid" "${_switch}"
-
-                    if [ -n "${_sid}" ]; then
-                        _mtu=$(ifconfig "${_sid}" | head -n1 | awk '{print $NF}')
-
-                        if [ "${_mtu}" != "1500" ]; then
-                            util::log "guest" "${_name}" "setting mtu of ${_tap} to ${_mtu}"
-                    	    ifconfig "${_tap}" mtu "${_mtu}" >/dev/null 2>&1
-                        fi
-
-                        util::log "guest" "${_name}" "adding ${_tap} -> ${_sid} (${_switch} ${_member_type})"
-                        ifconfig "${_sid}" "${_member_type}" "${_tap}" >/dev/null 2>&1 || util::log "guest" "${_name}" "failed to add ${_tap} to ${_sid}"
-
-                        util::log "guest" "${_name}" "bring up ${_tap} -> ${_sid} (${_switch} ${_member_type})"
-                        ifconfig "${_tap}" up >/dev/null 2>&1 || util::log "guest" "${_name}" "failed to bring up ${_tap} in ${_sid}"
-
-                        # set private if configured
-                        switch::is_private "${_switch}" && ifconfig "${_sid}" "private" "${_tap}" >/dev/null 2>&1
-                    else
-                        util::log "guest" "${_name}" "failed to find virtual switch '${_switch}'"
-                    fi
-                fi
-
-                _devices="${_devices} -s ${_slot_network}:${_func},${_type},${_tap}"
-                [ -n "${_mac}" ] && _devices="${_devices},mac=${_mac}"
-
-                _func=$((_func + 1))
-                [ -z "${_custom_tap}" ] && _taplist="${_taplist}${_taplist:+ }${_tap}"
+                _slot=$((_slot + 1))
             fi
         fi
 
+        switch::provision
         _num=$((_num + 1))
     done
 }
@@ -760,11 +682,16 @@ vm::bhyve_device_mouse(){
 }
 
 vm::bhyve_device_sound(){
-    local _play
+    local _play _rec
     config::get "_play" "sound_play" "/dev/dsp0"
+    config::get "_rec" "sound_rec"
 
     if config::yesno "sound"; then
         _devices="${_devices} -s ${_slot_sound}:0,hda,play=${_play}"
+
+        if [ -n "${_rec}" ]; then
+            _devices="${_devices},rec=${_rec}"
+        fi
     fi
 }
 
